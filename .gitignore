@@ -1,0 +1,17 @@
+# venv / python
+.venv/
+__pycache__/
+*.pyc
+
+# local-only reference-builder tooling — the Doxygen reference layer (members/refs) is
+# pre-built into data/dayz_scripts.db and shipped, so these dev scripts aren't published.
+crawl_ref.py
+parse_ref.py
+cache/
+
+# logs / background-task spill
+crawl.log
+*.output
+
+# NOTE: data/dayz_scripts.db IS committed on purpose — it's the built index and ships ready
+# to use. Delete this note + add `data/` if you'd rather rebuild on each clone.

@@ -1,0 +1,9 @@
+# keep the build context tiny — the server image is just .py + requirements
+.venv/
+__pycache__/
+cache/
+data/
+*.log
+*.output
+.git/
+README*.md

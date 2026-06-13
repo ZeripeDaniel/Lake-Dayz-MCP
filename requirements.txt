@@ -1,0 +1,7 @@
+# MCP server runtime
+mcp>=1.2.0
+
+# crawl/index pipeline (host side — building data/dayz_scripts.db)
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+lxml>=5.0.0
