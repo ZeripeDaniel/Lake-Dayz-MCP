@@ -3,6 +3,8 @@
 [English](README.md) · **한국어**
 
 > DayZ Enforce 코드를 짜기 **전에**, 컴파일러처럼 **"통과? ㅇㅇ / ㄴㄴ"** 로 판정해 주는 MCP 서버. `modded class`·`extends` 대상이 진짜 존재하는지(주석처리된 죽은 코드 아닌지), 어느 모듈에 있는지, 누가 쓰는지(이해관계)를 즉답한다. 패킹 전에 호출해서 부팅 사망을 미리 거른다.
+>
+> 🎮 점령전 DayZ 서버 **[dayzlake.online](https://dayzlake.online)** 만들다가 탄생한 도구.
 
 ---
 
@@ -113,6 +115,12 @@ claude mcp add -s user lake-dayz -- ^
 > **`modded class X` / `class X : Y` / `extends Y` 가 들어가는 코드는, 패킹 전에 `check_modded(X)` + `enforce_lint(파일)` 를 반드시 통과시킨다. 아이템 config override는 `check_config`.**
 
 판정이 **ㄴㄴ**면 패킹 금지. 이 한 단계가 "코드 있네?! → 부팅 사망"을 막는다.
+
+---
+
+## 만든 배경
+
+점령전 DayZ 서버 **[dayzlake.online](https://dayzlake.online)** 를 만들다가 시작됐습니다. 부팅해야만 터지는 Enforce 실수에 계속 당하는 게 답답해서, 패킹 전에 미리 잡으려고 이 MCP를 만들었어요. DayZ가 한국에서도 더 발전하길 바랍니다 — 서버에도 한번 놀러오세요. 🇰🇷
 
 ---
 

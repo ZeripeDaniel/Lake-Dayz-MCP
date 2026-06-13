@@ -3,6 +3,8 @@
 **English** · [한국어](README.ko.md)
 
 > An MCP server that pre-flights DayZ Enforce mods — compiler-style pass/fail checks that catch boot-crashing mistakes (deprecated/commented-out classes, wrong config classes, bad modded/overrides) before you pack a PBO.
+>
+> 🎮 Built while making **[dayzlake.online](https://dayzlake.online)** — a DayZ territory-control (점령전) server.
 
 ---
 
@@ -113,6 +115,12 @@ Env vars: `DAYZ_MCP_DB` / `DAYZ_MCP_MODSET` / `DAYZ_MCP_GUIDE`.
 > **Any code with `modded class X` / `class X : Y` / `extends Y` must pass `check_modded(X)` + `enforce_lint(file)` before packing. Item config overrides: `check_config`.**
 
 If the verdict is **ㄴㄴ (no)**, don't pack. This one step stops "the code exists!? → dead boot."
+
+---
+
+## Background
+
+This started while building **[dayzlake.online](https://dayzlake.online)**, a DayZ territory-control server. I kept getting bitten by Enforce mistakes that only blow up *after* you launch the game — so I got fed up and built this MCP to catch them before packing. Hoping DayZ keeps growing, the Korean community included. Drop by the server sometime. 🇰🇷
 
 ---
 
