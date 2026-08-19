@@ -1,0 +1,11 @@
+{
+  "_README": "Curated Lake gotchas surfaced by check_modded / enforce_lint. 'engine_classes' = classes that EXIST in script source (so check_modded used to say 'ㅇㅇ 통과') but FAIL to compile when modded ('Engine class X cannot be modded'). check_modded now returns ㄴㄴ for these and prints the note; enforce_lint flags `modded class <these>`. Read per-call -> edit freely (no server restart needed for JSON edits; the server.py wiring needs one restart). Add new engine classes / hook-instead notes as discovered.",
+  "engine_classes": {
+    "DamageSystem": "엔진 정적 유틸 클래스 (modded 불가). 차량/보트 데미지존 이름(범퍼/펜더/엔진/지붕/창문/연료탱크/섀시/반사판/적재함/덮개/부유체 = CfgVehicleDmg_*)을 한글화하려고 GetDamageDisplayName을 모딩하면 컴파일 거부. 게다가 GetDamageDisplayName(damagesystem.c:135)은 raw 키를 Widget.TranslateString으로 이미 해소해 반환하므로 호출처(SetItemDesc)에서의 Remap도 무력. ★정답: modded ActionTargetsCursor.GetItemDesc (5_mission, 모딩 가능)에서 super 호출 후 vanilla처럼 존을 재탐지(m_Target/m_DisplayInteractTarget→targetEntity, ShowZonesHealth, DamageSystem.GetDamageZoneFromComponentName ← 엔진 static의 '호출'은 됨) → entity.GetEntityDamageDisplayNameMap().Find(zone.Hash(), raw)로 raw 키('#STR_CfgVehicleDmg_*')를 직접 꺼내 → #STR_LAKE_*로 Remap → Widget.TranslateString. (구현: LakeProject_Localization/scripts/5_Mission/Cursor/LakeActionCursorRedirect.c)",
+    "EntityAI": "엔진 클래스 (modded 불가). 그 부모 Entity도 동일. 모딩은 스크립트 자식들에만 가능: PlayerBase / DayZPlayerImplement / ManBase / ItemBase / CarScript / ActionBase 등. 데미지존 맵 빌더 EntityAI.InitDamageZoneDisplayNameMapping(entityai.c:406)도 EntityAI 소속이라 modded 불가 → DamageSystem 항목의 ActionTargetsCursor.GetItemDesc 우회 사용.",
+    "Entity": "엔진 클래스 — modded 불가. 스크립트 자식(EntityAI는 엔진, 그 아래 PlayerBase 등)만.",
+    "Managed": "엔진 베이스 — modded 불가.",
+    "Class": "엔진 베이스 — modded 불가.",
+    "CfgFontFamilies": "★존재하지 않는 config 클래스 — DayZ/Enfusion에 'CfgFontFamilies'는 없다 (Claude가 환각으로 지어냈다가 사용자에게 정정받음, 2026-06-15). config 기반 '전역 폰트-패밀리 override'라는 방법 자체가 modern DayZ엔 없음 — 사용자가 과거에 시도했으나 modern UI는 SDF 폰트를 'gui/fonts/sdf_metron*' 경로로 직접 참조해서 패밀리 override가 안 잡힘. ★한글 폰트 올바른 방법: (1) 번역=stringtable chinesesimp(14)+chinese(11) 칸에 한글 + 게임언어=Chinesesimp → SDF가 sdf_notosanscjk(한글 포함)로 자동 폴백 → 폰트작업 0으로 렌더(기본 레시피); (2) 커스텀 폰트 원하면=레이아웃 font 참조를 \"LakeFont/fonts/NanumSquareR.fnt\"(.fnt 확장자 필수)로 스왑. CfgFontFamilies 절대 제안 금지."
+  }
+}

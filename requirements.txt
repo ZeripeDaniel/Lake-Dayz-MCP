@@ -1,5 +1,5 @@
 # MCP server runtime
-mcp>=1.2.0
+mcp>=1.2.0,<2   # 2.0 에서 mcp.server.fastmcp 제거됨 — server.py 가 못 뜬다
 
 # crawl/index pipeline (host side — building data/dayz_scripts.db)
 requests>=2.31.0

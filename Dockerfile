@@ -22,7 +22,9 @@ FROM python:3.12-slim
 WORKDIR /app
 
 # 서버 런타임 의존성만 (crawl/index는 호스트에서 도므로 requests/bs4/lxml 불필요)
-RUN pip install --no-cache-dir "mcp>=1.2.0"
+# ★ 1.x 로 고정. mcp 2.0.0 에서 `mcp.server.fastmcp` 가 사라져(→ mcp.server.mcpserver)
+#   server.py 가 import 단계에서 죽는다. 상한을 안 걸면 빌드할 때마다 최신을 끌어와 깨진다.
+RUN pip install --no-cache-dir "mcp>=1.2.0,<2"
 
 COPY server.py .
 

@@ -12,7 +12,7 @@ References/Referenced-by). Re-run index_local.py after a game update.
 
 Run (stdio): python server.py   |   Docker: see Dockerfile / README-ko.md
 """
-import os, re, glob, sqlite3
+import os, re, glob, sqlite3, json
 
 from mcp.server.fastmcp import FastMCP
 
@@ -30,6 +30,24 @@ def q(sql, args=()):
         return con.execute(sql, args).fetchall()
     finally:
         con.close()
+
+
+def _lake_notes():
+    """Curated Lake gotchas — engine classes that CANNOT be modded (compile 'Engine class X cannot be
+    modded') even though they 'exist' in script source, plus where/how to hook instead. Read per-call so
+    data/lake_notes.json edits go live without restarting the server. Grow it as new traps are found."""
+    try:
+        with open(os.path.join(ROOT, "data", "lake_notes.json"), encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _engine_note(class_name):
+    for k, v in _lake_notes().get("engine_classes", {}).items():
+        if k.lower() == class_name.lower():
+            return v
+    return None
 
 
 def _sym_rows(name):
@@ -85,7 +103,13 @@ def _usage_lines(name):
 @mcp.tool()
 def check_modded(class_name: str) -> str:
     """`modded class X`를 써도 되는지 사전 판정 (부팅 사망 방지). 첫 줄이 판정: ㅇㅇ(통과)/ㄴㄴ(불가).
-    검사: 실존 여부, 주석처리(deprecated) 여부, 모듈 위치, 이미 modded한 모드, 사용 흔적."""
+    검사: 실존 여부, 주석처리(deprecated) 여부, 모듈 위치, 이미 modded한 모드, 사용 흔적,
+    **엔진 클래스 여부('실존'해도 modded 불가)**."""
+    en = _engine_note(class_name)
+    if en:
+        return ("판정: ㄴㄴ 불가 — `%s`는 **엔진 클래스**라 `modded` 시 컴파일 거부 "
+                "('Engine class cannot be modded'). 스크립트 바인딩(.c)이 있어 '실존'하지만 모딩은 불가 — "
+                "여기서 '실존' ≠ '모딩가능'. 모딩은 확실한 스크립트 자식/UI 클래스에만.\n→ %s" % (class_name, en))
     rows = _sym_rows(class_name)
     base = [r for r in rows if not r[3]]            # plain definitions
     mods = [r for r in rows if r[3]]                # modded-definitions
@@ -483,6 +507,10 @@ def enforce_lint(code_or_path: str) -> str:
     issues = []
     for m_ in MODDED_DECL.finditer(live):
         cn = m_.group(1)
+        en = _engine_note(cn)
+        if en:
+            issues.append("ENGINE-CLASS: `modded class %s` — 엔진 클래스라 컴파일 거부 ('Engine class cannot be modded'). %s" % (cn, en))
+            continue
         rows = [r for r in _sym_rows(cn) if not r[3]]
         live_rows = [r for r in rows if not r[4]]
         if not rows:
