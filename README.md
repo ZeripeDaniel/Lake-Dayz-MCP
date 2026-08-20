@@ -36,6 +36,7 @@ Every tool is **verdict/evidence first** — the first line is the conclusion (`
 |---|---|
 | **`check_addon(module_dir, addons_dir)`** | Whole-module preflight for **silent** failures — requiredAddons is a CfgPatches name (not a pbo filename), `#ifdef` guard really exists (a typo deletes the block), script folder declared in `files[]` (undeclared = never compiled), `$PREFIX$` hygiene |
 | **`check_pbo(pbo, source_dir, contains, also)`** | Post-pack/deploy proof — stale-vs-source (FileBank silently skips locked pbos and still exits 0), `prefix` trailing-separator trap, string presence, copy-to-copy hash |
+| **`find_hook(target, ref_dir)`** | *Where do I hook this?* — answers from **your own working source**: prior art (file/class/method + the hook form used), plus the original set-sites and whether a getter exists (3-line redirect vs rewriting a 50-line `Init()`) |
 | **`check_env()`** | Pre-flight the environment **before writing code** — index DB, mod-source mount, and the exact commands to mount P: / extract game data (both run unattended) |
 | **`check_modded(class)`** | Pre-flight a `modded class` — exists? commented-out (deprecated)? which module? already modded by whom? used anywhere? |
 | **`enforce_lint(code\|path)`** | Static check — unknown-type (incl. commented), C-style casts, `string+bool`, widget-method existence, name collisions, platform-gated overrides |

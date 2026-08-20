@@ -12,7 +12,7 @@ References/Referenced-by). Re-run index_local.py after a game update.
 
 Run (stdio): python server.py   |   Docker: see Dockerfile / README-ko.md
 """
-import os, re, glob, sqlite3, json
+import os, re, glob, sqlite3, json, collections
 
 from mcp.server.fastmcp import FastMCP
 
@@ -1250,6 +1250,178 @@ def check_addon(module_dir: str, addons_dir: str = "") -> str:
 
     head = "모듈 점검: %s" % ("이상 없음 ㅇㅇ" if ok else "문제 있음 ㄴㄴ")
     return head + "\n\n" + "\n".join(L)
+
+"""find_hook — '어디를 후킹해야 하나' 를 우리 소스의 검증된 선례로 답한다."""
+
+# 우리 모드셋에서 실제로 쓰이는 후킹 형태 (650개 .c 를 집계해 뽑은 것).
+# 왼쪽이 흔할수록 안전하고 손이 덜 간다.
+_HOOK_FORMS = [
+    ("레이아웃 리다이렉트", r"override\s+string\s+Get\w*Layout\w*\s*\(", "안전",
+     "경로를 돌려주는 getter 를 덮는다. 원본 로직을 하나도 안 건드려 제일 안전하다."),
+    ("super 후 보정", r"super\.(\w+)\s*\(", "안전",
+     "super 를 그대로 부르고 결과만 고친다. 계산 로직을 베끼지 않아도 된다."),
+    ("키/문자열 치환표", r"s_\w*\.Set\(\s*\"", "안전",
+     "키를 우리 키로 바꾸는 map. 못 찾으면 원본을 그대로 두는 형태여야 안전하다."),
+    ("위젯 SetText", r"\.SetText\(", "보통",
+     "만들어진 위젯의 텍스트만 바꾼다. 위젯 이름이 바뀌면 조용히 넘어간다(안전한 실패)."),
+    ("override static", r"override\s+static\s", "위험",
+     "super 없이 통째 교체. 원본이 갱신되면 우리 복사본이 낡는다. 짧은 함수에만 쓸 것."),
+    ("CreateWidgets 직접", r"CreateWidgets\(\s*\"", "위험",
+     "레이아웃 경로가 코드에 박혀 getter 가 없는 경우. 감싸는 함수를 통째로 베껴야 한다."),
+]
+
+
+def _hook_forms_in(text):
+    out = []
+    for name, rx, risk, why in _HOOK_FORMS:
+        if re.search(rx, text):
+            out.append((name, risk, why))
+    return out
+
+
+def _enclosing(text, pos):
+    """pos 를 감싸는 (modded class, 메서드) 이름을 되짚는다."""
+    head = text[:pos]
+    cls = None
+    for m in re.finditer(r"(?:modded\s+)?class\s+([A-Za-z0-9_]+)", head):
+        cls = m.group(1)
+    meth = None
+    for m in re.finditer(r"(?m)^\s*(?:override\s+|static\s+|protected\s+)*[A-Za-z_][\w<>\[\]]*\s+([A-Za-z_]\w*)\s*\([^;]*$", head):
+        meth = m.group(1)
+    return cls, meth
+
+
+@mcp.tool()
+def find_hook(target: str, ref_dir: str = "", limit: int = 12) -> str:
+    """'이걸 바꾸려면 어디를 건드려야 하나' — **우리 소스의 검증된 선례**로 답한다.
+
+    코드를 새로 지어내기 전에 이걸 먼저 부른다. 우리 모드셋(DAYZ_MCP_MODSET)은 대부분
+    실제로 동작 중인 코드라, 같은 문제를 이미 어떻게 풀었는지가 그대로 답이 된다.
+
+    target : 찾을 것 — 스트링테이블 키(STR_EXPANSION_...), 클래스명, 화면에 보이는 문구 등
+    ref_dir: (선택) 서드파티 원본 소스를 마운트했다면 그 경로.
+             거기서 '값을 세팅하는 지점' 을 찾고, 감싸는 클래스에 getter 가 있는지까지 본다.
+
+    돌려주는 것
+      1) 우리 소스의 선례 — 파일/클래스/메서드 + 쓰인 후킹 형태와 위험도
+      2) ref_dir 이 있으면 원본의 세팅 지점 + getter 유무(= 3줄 수정이냐 통째 재작성이냐)
+      3) 후킹 형태별 요약(안전한 것부터)"""
+    if not (MODSET and os.path.isdir(MODSET)):
+        return ("DAYZ_MCP_MODSET 이 없다. 우리 소스가 있어야 선례를 보여 줄 수 있다.\n"
+                "도커라면 모드 소스 루트를 /modset 으로 마운트할 것.")
+
+    needle = target.strip().lstrip("#$")
+    if not needle:
+        return "target 이 비었다."
+
+    L = ["찾는 것: %s" % target, ""]
+
+    # ── 1) 우리 소스의 선례 ───────────────────────────────────
+    hits = []
+    for dirpath, _, fs in os.walk(MODSET):
+        for fn in fs:
+            if not fn.lower().endswith((".c", ".cpp", ".layout", ".csv")):
+                continue
+            p = os.path.join(dirpath, fn)
+            t = _read(p)
+            if not t or needle.lower() not in t.lower():
+                continue
+            rel = os.path.relpath(p, MODSET)
+            for m in re.finditer(re.escape(needle), t, re.I):
+                cls, meth = _enclosing(t, m.start())
+                line = t.count("\n", 0, m.start()) + 1
+                hits.append((rel, line, cls, meth, t))
+                break  # 파일당 첫 지점만
+    L.append("[1] 우리 소스의 선례 — %d개 파일" % len(hits))
+    if not hits:
+        L.append("  없음. 이 프로젝트에서 처음 다루는 대상이다.")
+        L.append("  search_symbols / find_usages 로 범위를 넓혀 보고, 없으면 아래 [3] 의")
+        L.append("  안전한 형태부터 골라 새로 만든다.")
+    else:
+        forms_all = collections.Counter()
+        for rel, line, cls, meth, t in hits[:limit]:
+            L.append("  %s:%d" % (rel, line))
+            if cls or meth:
+                L.append("     %s%s" % ("class %s" % cls if cls else "",
+                                        "  ->  %s()" % meth if meth else ""))
+            fs_ = _hook_forms_in(t)
+            for name, risk, _why in fs_:
+                forms_all[(name, risk)] += 1
+            if fs_:
+                L.append("     형태: %s" % ", ".join("%s(%s)" % (n, r) for n, r, _ in fs_))
+        if len(hits) > limit:
+            L.append("  ... 외 %d개 파일" % (len(hits) - limit))
+        if forms_all:
+            L.append("")
+            L.append("  이 선례들이 쓴 형태:")
+            for (n, r), c in forms_all.most_common():
+                L.append("    %-22s %-4s %d개 파일" % (n, r, c))
+
+    # ── 2) 원본에서 세팅하는 지점 ─────────────────────────────
+    L.append("")
+    if not ref_dir:
+        L.append("[2] 원본 세팅 지점 — ref_dir 을 주면 찾는다")
+        L.append("    (서드파티 소스를 언팩해 두고 그 경로를 넘기면,")
+        L.append("     값을 세팅하는 곳과 getter 유무까지 짚어 준다)")
+    elif not os.path.isdir(ref_dir):
+        L.append("[2] ref_dir 없음: %s" % ref_dir)
+    else:
+        L.append("[2] 원본 세팅 지점 (%s)" % ref_dir)
+        found = 0
+        for dirpath, _, fs in os.walk(ref_dir):
+            for fn in fs:
+                if not fn.lower().endswith((".c", ".layout")):
+                    continue
+                p = os.path.join(dirpath, fn)
+                t = _read(p)
+                if not t or needle.lower() not in t.lower():
+                    continue
+                rel = os.path.relpath(p, ref_dir)
+                for m in re.finditer(re.escape(needle), t, re.I):
+                    seg = t[max(0, m.start() - 220):m.start() + 80]
+                    kind = None
+                    if re.search(r"\.SetText\(\s*[^)]*$", seg):
+                        kind = "SetText"
+                    elif re.search(r"=\s*\"[^\"]*$", seg):
+                        kind = "대입"
+                    elif fn.lower().endswith(".layout"):
+                        kind = "레이아웃 정적 텍스트"
+                    cls, meth = _enclosing(t, m.start())
+                    line = t.count("\n", 0, m.start()) + 1
+                    getter = re.search(r"override\s+string\s+Get\w*Layout\w*\s*\(", t)
+                    L.append("  %s:%d  %s" % (rel, line, kind or ""))
+                    if cls or meth:
+                        L.append("     %s%s" % ("class %s" % cls if cls else "",
+                                                "  ->  %s()" % meth if meth else ""))
+                    if fn.lower().endswith(".layout"):
+                        L.append("     -> 레이아웃 텍스트. 이 파일을 쓰는 클래스에 GetLayoutFile() 이 있으면")
+                        L.append("        복사본으로 리다이렉트하는 게 가장 안전하다.")
+                    elif getter:
+                        L.append("     -> 같은 파일에 레이아웃 getter 있음 = 리다이렉트로 풀릴 가능성 높음 (안전)")
+                    elif meth:
+                        L.append("     -> getter 없음. %s() 를 override 해서 **super 후 보정**을 먼저 검토할 것." % meth)
+                        L.append("        super 로 안 되면 그때 통째 교체(위험, 함수가 짧을 때만).")
+                    found += 1
+                    break
+                if found >= limit:
+                    break
+            if found >= limit:
+                break
+        if not found:
+            L.append("  없음.")
+
+    # ── 3) 형태별 요약 ────────────────────────────────────────
+    L.append("")
+    L.append("[3] 후킹 형태 — 위에서부터 우선 검토할 것")
+    for name, _rx, risk, why in _HOOK_FORMS:
+        L.append("  [%s] %s" % (risk, name))
+        L.append("        %s" % why)
+
+    L.append("")
+    L.append("[4] 고른 뒤에는")
+    L.append("  check_modded 로 대상 클래스가 실존하는지, enforce_lint 로 문법을,")
+    L.append("  check_addon 으로 가드/레이어/requiredAddons 를 확인하고 패킹한다.")
+    return "\n".join(L)
 
 if __name__ == "__main__":
     mcp.run()
