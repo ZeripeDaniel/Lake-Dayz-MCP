@@ -34,13 +34,13 @@ Every tool is **verdict/evidence first** — the first line is the conclusion (`
 
 | Tool | Purpose |
 |---|---|
-| **`check_addon(module_dir, addons_dir)`** | Whole-module preflight for **silent** failures — requiredAddons is a CfgPatches name (not a pbo filename), `#ifdef` guard really exists (a typo deletes the block), script folder declared in `files[]` (undeclared = never compiled), `$PREFIX$` hygiene |
-| **`check_pbo(pbo, source_dir, contains, also)`** | Post-pack/deploy proof — stale-vs-source (FileBank silently skips locked pbos and still exits 0), `prefix` trailing-separator trap, string presence, copy-to-copy hash |
 | **`find_hook(target, ref_dir)`** | *Where do I hook this?* — answers from **your own working source**: prior art (file/class/method + the hook form used), plus the original set-sites and whether a getter exists (3-line redirect vs rewriting a 50-line `Init()`) |
 | **`check_env()`** | Pre-flight the environment **before writing code** — index DB, mod-source mount, and the exact commands to mount P: / extract game data (both run unattended) |
+| **`check_addon(module_dir, addons_dir)`** | Whole-module preflight for **silent** failures — requiredAddons is a CfgPatches name (not a pbo filename), `#ifdef` guard really exists (a typo deletes the block), script folder declared in `files[]` (undeclared = never compiled), `$PREFIX$` hygiene |
 | **`check_modded(class)`** | Pre-flight a `modded class` — exists? commented-out (deprecated)? which module? already modded by whom? used anywhere? |
 | **`enforce_lint(code\|path)`** | Static check — unknown-type (incl. commented), C-style casts, `string+bool`, widget-method existence, name collisions, platform-gated overrides |
 | **`check_config(path)`** | `config.cpp` validity — is an item declared under the right `CfgXxx`? (WRONG-CFG = model-less phantom → won't spawn) |
+| **`check_pbo(pbo, source_dir, contains, also)`** | Post-pack/deploy proof — stale-vs-source (FileBank silently skips locked pbos and still exits 0), `prefix` trailing-separator trap, string presence, copy-to-copy hash |
 | `symbol_lookup(name)` | Symbol card: per-source definition / parent / module / `file:line` / commented-out / modded status |
 | `class_info(name)` | Parent chain (local source = authority) + children + member signatures |
 | `find_usages(symbol)` | Where it's used: vanilla reference Referenced-by/References + live grep over your mod source |
@@ -120,9 +120,21 @@ Env vars: `DAYZ_MCP_DB` / `DAYZ_MCP_MODSET` / `DAYZ_MCP_GUIDE`.
 
 ## Rule of use
 
-> **Any code with `modded class X` / `class X : Y` / `extends Y` must pass `check_modded(X)` + `enforce_lint(file)` before packing. Item config overrides: `check_config`.**
+Call them in workflow order. Each step stops a **different kind of death**.
 
-If the verdict is **ㄴㄴ (no)**, don't pack. This one step stops "the code exists!? → dead boot."
+| When | Call | Stops |
+|---|---|---|
+| Before starting | `check_env` | Getting stuck because the toolchain isn't set up |
+| Before writing code | `find_hook` | Hooking the wrong place, or rewriting 50 lines when a getter exists |
+| Before packing | `check_modded` · `enforce_lint` · `check_config` | Dead boot (compile errors) |
+| Before packing | `check_addon` | **Silent failure** — it compiles, and then nothing happens |
+| Right after pack/deploy | `check_pbo` | Believing a change shipped when it didn't |
+
+> **Any code with `modded class X` / `class X : Y` / `extends Y` must pass `check_modded(X)` + `enforce_lint(file)` before packing. Item config overrides: `check_config`. Whole module: `check_addon`.**
+
+If the verdict is **ㄴㄴ (no)**, don't pack.
+
+One step stays human: **start the server and read `profiles/script.log`** — that's the only place compile results show up. `check_pbo` hands you that request line too.
 
 ---
 

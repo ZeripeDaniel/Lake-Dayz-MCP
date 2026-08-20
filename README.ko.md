@@ -34,13 +34,13 @@ modded class ActionFishing { override string GetText() { ... } }
 
 | 도구 | 용도 |
 |---|---|
-| **`check_addon(module_dir, addons_dir)`** | 모듈 통째 사전점검 — **조용한 실패** 전용. requiredAddons 가 CfgPatches 이름인가(pbo 파일명 아님)·`#ifdef` 가드 실존(오타면 블록이 사라짐)·스크립트 폴더가 `files[]` 에 선언됐나(안 하면 컴파일 자체가 안 됨)·`$PREFIX$` 위생 |
-| **`check_pbo(pbo, source_dir, contains, also)`** | 패킹/배포 사후 검증 — 소스보다 오래됐나(FileBank 는 잠긴 pbo 를 exit=0 으로 조용히 건너뛴다)·`prefix` 끝 구분자 함정·문구 실제 포함·배포본 해시 대조 |
 | **`find_hook(target, ref_dir)`** | *어디를 후킹하나* — **동작 중인 내 소스의 선례**로 답한다. 파일/클래스/메서드 + 쓰인 후킹 형태, 그리고 원본의 세팅 지점과 getter 유무(3줄 리다이렉트냐 50줄 `Init()` 재작성이냐) |
 | **`check_env()`** | **코드 짜기 전에** 환경 점검 — 인덱스 DB·모드소스 마운트 + P: 마운트/게임데이터 추출 명령(둘 다 무인 실행 가능) |
+| **`check_addon(module_dir, addons_dir)`** | 모듈 통째 사전점검 — **조용한 실패** 전용. requiredAddons 가 CfgPatches 이름인가(pbo 파일명 아님)·`#ifdef` 가드 실존(오타면 블록이 사라짐)·스크립트 폴더가 `files[]` 에 선언됐나(안 하면 컴파일 자체가 안 됨)·`$PREFIX$` 위생 |
 | **`check_modded(class)`** | `modded class` 사전 판정 — 실존? 주석처리(deprecated)? 모듈? 이미 누가 mod? 쓰는곳? |
 | **`enforce_lint(code\|path)`** | 정적 검사 — unknown-type(주석 포함)·C캐스트·`string+bool`·위젯 메서드 실존·이름충돌·platform-gated override |
 | **`check_config(path)`** | `config.cpp` 정합성 — 아이템이 맞는 `CfgXxx`에 선언됐나 (WRONG-CFG = 모델없는 유령 → 스폰버그) |
+| **`check_pbo(pbo, source_dir, contains, also)`** | 패킹/배포 사후 검증 — 소스보다 오래됐나(FileBank 는 잠긴 pbo 를 exit=0 으로 조용히 건너뛴다)·`prefix` 끝 구분자 함정·문구 실제 포함·배포본 해시 대조 |
 | `symbol_lookup(name)` | 심볼 카드: 소스별 정의/부모/모듈/`파일:라인`/주석여부/modded현황 |
 | `class_info(name)` | 부모 체인(로컬 소스 권위) + 자식 + 멤버 시그니처 |
 | `find_usages(symbol)` | 쓰는곳: vanilla 레퍼런스 Referenced-by/References + 모드셋 소스 실시간 grep |
@@ -120,9 +120,21 @@ claude mcp add -s user lake-dayz -- ^
 
 ## 운용 규칙
 
-> **`modded class X` / `class X : Y` / `extends Y` 가 들어가는 코드는, 패킹 전에 `check_modded(X)` + `enforce_lint(파일)` 를 반드시 통과시킨다. 아이템 config override는 `check_config`.**
+작업 흐름대로 부른다. 각 단계가 **다른 종류의 사망**을 막는다.
 
-판정이 **ㄴㄴ**면 패킹 금지. 이 한 단계가 "코드 있네?! → 부팅 사망"을 막는다.
+| 언제 | 부를 것 | 막는 것 |
+|---|---|---|
+| 시작 전 | `check_env` | 환경이 안 서 있어 진도가 안 나가는 것 |
+| 코드 짜기 전 | `find_hook` | 엉뚱한 곳을 후킹하거나, getter 가 있는데 50줄을 베끼는 것 |
+| 패킹 전 | `check_modded` · `enforce_lint` · `check_config` | 부팅 사망 (컴파일 에러) |
+| 패킹 전 | `check_addon` | **조용한 실패** — 컴파일은 되는데 아무 일도 안 일어나는 것 |
+| 패킹/배포 직후 | `check_pbo` | 반영 안 된 걸 됐다고 믿는 것 |
+
+> **`modded class X` / `class X : Y` / `extends Y` 가 들어가면 패킹 전에 `check_modded(X)` + `enforce_lint(파일)` 를 반드시 통과시킨다. 아이템 config override 는 `check_config`, 모듈 단위는 `check_addon`.**
+
+판정이 **ㄴㄴ**면 패킹 금지.
+
+그리고 마지막 한 걸음은 사람 몫이다 — **서버를 켜고 `profiles/script.log` 를 확인**해야 컴파일 결과를 알 수 있다. `check_pbo` 가 그 요청 문구까지 같이 돌려준다.
 
 ---
 
