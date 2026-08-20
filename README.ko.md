@@ -34,6 +34,7 @@ modded class ActionFishing { override string GetText() { ... } }
 
 | 도구 | 용도 |
 |---|---|
+| **`check_addon(module_dir, addons_dir)`** | 모듈 통째 사전점검 — **조용한 실패** 전용. requiredAddons 가 CfgPatches 이름인가(pbo 파일명 아님)·`#ifdef` 가드 실존(오타면 블록이 사라짐)·스크립트 폴더가 `files[]` 에 선언됐나(안 하면 컴파일 자체가 안 됨)·`$PREFIX$` 위생 |
 | **`check_pbo(pbo, source_dir, contains, also)`** | 패킹/배포 사후 검증 — 소스보다 오래됐나(FileBank 는 잠긴 pbo 를 exit=0 으로 조용히 건너뛴다)·`prefix` 끝 구분자 함정·문구 실제 포함·배포본 해시 대조 |
 | **`check_env()`** | **코드 짜기 전에** 환경 점검 — 인덱스 DB·모드소스 마운트 + P: 마운트/게임데이터 추출 명령(둘 다 무인 실행 가능) |
 | **`check_modded(class)`** | `modded class` 사전 판정 — 실존? 주석처리(deprecated)? 모듈? 이미 누가 mod? 쓰는곳? |

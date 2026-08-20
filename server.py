@@ -1042,5 +1042,214 @@ def check_pbo(pbo_path: str, source_dir: str = "", contains: str = "", also: str
     head = "패킹/배포 검증: %s" % ("이상 없음 ㅇㅇ" if ok else "문제 있음 ㄴㄴ")
     return head + "\n\n" + "\n".join(L)
 
+_LAYER_RE = re.compile(r"(?i)(^|[\\/])([1-9]_[A-Za-z]+)([\\/]|$)")
+
+
+def _read(p):
+    try:
+        return open(p, "rb").read().decode("utf-8", "replace")
+    except Exception:
+        return ""
+
+
+def _strip_comments(t):
+    t = re.sub(r"/\*.*?\*/", "", t, flags=re.S)
+    return re.sub(r"//[^\n]*", "", t)
+
+
+def _cfgpatches_names(text):
+    """config.cpp 의 CfgPatches 아래 1단계 클래스 이름들 = 이 addon 의 '진짜 이름'."""
+    m = re.search(r"class\s+CfgPatches\s*\{", text)
+    if not m:
+        return []
+    i, depth, out = m.end(), 1, []
+    while i < len(text) and depth > 0:
+        c = text[i]
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+        elif depth == 1:
+            mm = re.match(r"class\s+([A-Za-z0-9_]+)", text[i:])
+            if mm:
+                out.append(mm.group(1))
+                i += mm.end() - 1
+        i += 1
+    return out
+
+
+def _declared_layers(text, module_name):
+    """CfgMods ... defs 의 files[] 에 선언된 스크립트 폴더들."""
+    return [p.replace("\\", "/") for p in re.findall(r'"([^"]*[1-9]_[A-Za-z]+[^"]*)"', text)]
+
+
+def _corpus_defines(root, limit_files=4000):
+    """모드셋 전체에서 실제로 쓰이는 #ifdef 이름들. 우리 가드가 오타인지 판별하는 근거."""
+    seen = set()
+    n = 0
+    for dirpath, _, fs in os.walk(root):
+        for fn in fs:
+            if not fn.lower().endswith((".c", ".cpp", ".hpp")):
+                continue
+            n += 1
+            if n > limit_files:
+                return seen
+            for m in re.finditer(r"#\s*(?:ifdef|ifndef|define)\s+([A-Za-z_][A-Za-z0-9_]*)",
+                                 _read(os.path.join(dirpath, fn))):
+                seen.add(m.group(1))
+    return seen
+
+
+@mcp.tool()
+def check_addon(module_dir: str, addons_dir: str = "") -> str:
+    """모듈 하나를 통째로 사전 점검 — **컴파일 에러가 아니라 '조용히 아무 일도 안 일어나는'** 실수를 잡는다.
+
+    Enforce 에서 제일 비싼 실수는 부팅이 죽는 게 아니라, 코드가 멀쩡히 컴파일됐는데
+    **실행이 안 되는** 쪽이다. 로그에 아무것도 안 남아서 원인 찾기가 어렵다. 검사 대상:
+
+      1) requiredAddons 가 **CfgPatches 이름**인가 (파일명 아님 — 이름이 다른 pbo 가 흔하다)
+      2) `#ifdef` 가드가 실재하는 디파인인가 (틀리면 그 블록이 통째로 사라진다)
+      3) `modded class` 가 든 폴더가 config 의 files[] 에 **선언돼 있는가**
+         (선언 안 하면 그 파일은 아예 컴파일되지 않는다 = 후킹이 조용히 무효)
+      4) $PREFIX$ 위생 (끝의 개행/구분자 -> 스크립트가 통째로 빠진다)
+
+    module_dir : 모듈 소스 폴더(config.cpp 가 있는 곳)
+    addons_dir : (선택) pbo 들이 있는 폴더. requiredAddons 이름을 pbo 파일명과 대조해
+                 '파일명을 적은 실수' 를 더 정확히 짚어 준다."""
+    L, ok = [], True
+    if not os.path.isdir(module_dir):
+        if _in_docker():
+            return ("폴더가 안 보인다: %s\n도커라 마운트가 없을 수 있다. 직접 확인: ls -la \"%s\""
+                    % (module_dir, module_dir))
+        return "ㄴㄴ 폴더 없음: %s" % module_dir
+
+    cfg_path = ""
+    for cand in ("config.cpp", "Config.cpp"):
+        p = os.path.join(module_dir, cand)
+        if os.path.exists(p):
+            cfg_path = p
+            break
+    if not cfg_path:
+        return "ㄴㄴ config.cpp 를 못 찾음: %s" % module_dir
+
+    cfg = _strip_comments(_read(cfg_path))
+    names = _cfgpatches_names(cfg)
+    L.append("모듈: %s" % module_dir)
+    L.append("CfgPatches: %s" % (", ".join(names) if names else "(없음!)"))
+    if not names:
+        ok = False
+        L.append("  ㄴㄴ CfgPatches 가 없으면 이 addon 은 등록되지 않는다.")
+
+    # ── 1. requiredAddons ─────────────────────────────────────
+    L.append("")
+    L.append("[1] requiredAddons — 파일명이 아니라 CfgPatches 이름이어야 한다")
+    req = []
+    for blk in re.findall(r"requiredAddons\s*\[\s*\]\s*=\s*\{([^}]*)\}", cfg, re.S):
+        req += re.findall(r'"([^"]+)"', blk)
+    if not req:
+        L.append("  -- requiredAddons 가 비었다. 우리가 modded 하는 대상 addon 을 넣어야")
+        L.append("     그 뒤에 로드되고, 대상 클래스가 실제로 존재하게 된다.")
+    else:
+        known = set()
+        if MODSET and os.path.isdir(MODSET):
+            for dirpath, _, fs in os.walk(MODSET):
+                for fn in fs:
+                    if fn.lower() == "config.cpp":
+                        known |= set(_cfgpatches_names(_strip_comments(_read(os.path.join(dirpath, fn)))))
+        pbo_names = set()
+        if addons_dir and os.path.isdir(addons_dir):
+            pbo_names = {os.path.splitext(f)[0] for f in os.listdir(addons_dir) if f.lower().endswith(".pbo")}
+
+        L.append("  %d개" % len(req))
+        for r in req:
+            if r in known:
+                L.append("  ㅇㅇ %-42s (모드셋에서 CfgPatches 확인)" % r)
+            elif r in pbo_names and r not in known:
+                ok = False
+                L.append("  ㄴㄴ %-42s ★ pbo 파일명과 같다. CfgPatches 이름인지 확인할 것." % r)
+                L.append("       (우리 것 중에도 파일명과 CfgPatches 이름이 다른 게 있다)")
+            else:
+                L.append("  ?? %-42s (모드셋 밖 — 바닐라/서드파티면 정상)" % r)
+
+    # ── 2. #ifdef 가드 ────────────────────────────────────────
+    L.append("")
+    L.append("[2] #ifdef 가드 — 틀리면 블록이 통째로 사라진다(에러 없음)")
+    guards = {}
+    for dirpath, _, fs in os.walk(module_dir):
+        for fn in fs:
+            if fn.lower().endswith(".c"):
+                p = os.path.join(dirpath, fn)
+                for m in re.finditer(r"(?m)^\s*#\s*if(?:n?def)\s+([A-Za-z_][A-Za-z0-9_]*)", _read(p)):
+                    guards.setdefault(m.group(1), set()).add(os.path.relpath(p, module_dir))
+    if not guards:
+        L.append("  -- 사용 안 함")
+    else:
+        corpus = _corpus_defines(MODSET) if (MODSET and os.path.isdir(MODSET)) else set()
+        for g, files in sorted(guards.items()):
+            if not corpus:
+                L.append("  ?? %-28s (모드셋 미설정이라 대조 불가)" % g)
+            elif g in corpus:
+                L.append("  ㅇㅇ %-28s %s" % (g, ", ".join(sorted(files))[:60]))
+            else:
+                ok = False
+                L.append("  ㄴㄴ %-28s ★ 모드셋 어디에도 없는 디파인." % g)
+                L.append("       오타면 이 가드 안의 코드가 **전부 사라진다**. 파일: %s"
+                         % ", ".join(sorted(files))[:60])
+
+    # ── 3. 스크립트 레이어 선언 ───────────────────────────────
+    L.append("")
+    L.append("[3] 스크립트 폴더가 config 에 선언됐나 — 빠지면 그 파일은 컴파일조차 안 된다")
+    declared = _declared_layers(cfg, os.path.basename(module_dir))
+    have = {}
+    for dirpath, _, fs in os.walk(module_dir):
+        if not any(f.lower().endswith(".c") for f in fs):
+            continue
+        rel = os.path.relpath(dirpath, module_dir).replace("\\", "/")
+        m = _LAYER_RE.search("/" + rel + "/")
+        if m:
+            have.setdefault(m.group(2), []).append(rel)
+    if not have:
+        L.append("  -- .c 파일이 없다(에셋 전용 addon).")
+    else:
+        for layer, dirs in sorted(have.items()):
+            hit = [d for d in declared if re.search(r"(?i)[\\/]%s([\\/]|$)" % re.escape(layer), "/" + d)]
+            if hit:
+                L.append("  ㅇㅇ %-10s 선언됨: %s" % (layer, hit[0]))
+            else:
+                ok = False
+                L.append("  ㄴㄴ %-10s ★ .c 가 있는데 files[] 에 없다 -> 컴파일 안 됨(후킹이 조용히 무효)" % layer)
+                L.append("       해당 폴더: %s" % ", ".join(dirs)[:70])
+        for d in declared:
+            m = _LAYER_RE.search("/" + d + "/")
+            if m and m.group(2) not in have:
+                L.append("  !  %-10s 선언은 있는데 .c 가 없다: %s" % (m.group(2), d))
+
+    # ── 4. $PREFIX$ ───────────────────────────────────────────
+    L.append("")
+    L.append("[4] $PREFIX$")
+    pf = os.path.join(module_dir, "$PREFIX$")
+    if not os.path.exists(pf):
+        L.append("  -- 파일 없음. FileBank 에 -property prefix=<이름> 으로 넘기면 된다(권장).")
+    else:
+        raw = open(pf, "rb").read()
+        txt = raw.decode("utf-8", "replace")
+        if raw != txt.strip().encode("utf-8"):
+            ok = False
+            L.append("  ㄴㄴ ★ 끝에 개행/공백이 붙어 있다 -> prefix 가 오염돼 스크립트가 통째로 빠진다.")
+            L.append("      내용: %r" % raw[:40])
+        elif txt.endswith("\\") or txt.endswith("/"):
+            ok = False
+            L.append("  ㄴㄴ ★ 끝에 구분자가 붙어 있다 -> 같은 증상.")
+        else:
+            L.append("  ㅇㅇ %r" % txt)
+
+    L.append("")
+    L.append("[5] 다음 단계")
+    L.append("  modded class 하나하나는 check_modded 로, 문법은 enforce_lint 로 따로 확인할 것.")
+    L.append("  패킹 뒤에는 check_pbo 로 실제 반영을 확인할 것.")
+
+    head = "모듈 점검: %s" % ("이상 없음 ㅇㅇ" if ok else "문제 있음 ㄴㄴ")
+    return head + "\n\n" + "\n".join(L)
+
 if __name__ == "__main__":
     mcp.run()
