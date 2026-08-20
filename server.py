@@ -224,7 +224,9 @@ def find_usages(symbol: str) -> str:
     # live grep over modset sources
     hits = []
     rx = re.compile(r"\b%s\b" % re.escape(symbol))
-    for f in glob.glob(os.path.join(MODSET, "**", "*.c"), recursive=True):
+    # ★ MODSET 이 비면 os.path.join("", "**", "*.c") 가 "**/*.c" 가 되어
+    #   **프로세스의 현재 작업 디렉터리**를 통째로 훑는다(#3). 반드시 막는다.
+    for f in (glob.glob(os.path.join(MODSET, "**", "*.c"), recursive=True) if MODSET else []):
         try:
             txt = open(f, encoding="utf-8", errors="replace").read()
         except OSError:
@@ -232,7 +234,11 @@ def find_usages(symbol: str) -> str:
         n = len(rx.findall(txt))
         if n:
             hits.append((os.path.relpath(f, MODSET), n))
-    out.append("모드셋(@LakeProject) 등장: %d파일" % len(hits))
+    if not MODSET:
+        out.append("모드셋 grep 안 함 — DAYZ_MCP_MODSET 미설정")
+    else:
+        out.append("모드셋(%s) 등장: %d파일"
+                   % (os.path.basename(MODSET.rstrip("/\\")) or MODSET, len(hits)))
     for f, n in sorted(hits, key=lambda x: -x[1])[:15]:
         out.append("  - %s (%d)" % (f, n))
     return "\n".join(out)
@@ -252,6 +258,16 @@ def search_symbols(pattern: str) -> str:
 
 
 # ---- enforce_lint -----------------------------------------------------------
+def _blank_strings(t):
+    """문자열 리터럴 안쪽만 공백으로. 따옴표/길이/줄수는 보존한다."""
+    def rep(m):
+        s = m.group(0)
+        if len(s) < 2:
+            return s
+        return s[0] + (" " * (len(s) - 2)) + s[-1]
+    return re.sub(r'"(?:\\.|[^"\\\n])*"', rep, t)
+
+
 CAST_RE = re.compile(r"\(\s*(?:int|float|bool|string)\s*\)\s*[\w(]")
 STR_PLUS_BOOL = re.compile(r'"[^"]*"\s*\+\s*(?:true|false)\b|\b(?:true|false)\s*\+\s*"')
 MODDED_DECL = re.compile(r"^[ \t]*modded[ \t]+class[ \t]+(\w+)", re.M)
@@ -420,7 +436,10 @@ def _name_collisions(live):
                     # expression (`Map().Set(...)`, `x = Map()`), it binds to the method and is fine
                     # (our cache Map()/Set() do exactly that → must NOT flag). Distinguisher: the
                     # call's `)` is immediately followed by `;` (statement) vs `.`/operator (expr).
-                    bare = re.search(r"[(;{}=,&|!]\s*" + re.escape(name) + r"\s*\([^()]*\)\s*;", live)
+                    # 위험한 건 **버려지는 단독 문장** 뿐이다. 앞 문자를 문장 경계로만 제한한다.
+                    # `=`(대입) `,`(인자) `&|!`(조건) 를 넣으면 x = Name(); 처럼
+                    # 위 주석이 "must NOT flag" 라고 못박은 경우까지 잡힌다(#1).
+                    bare = re.search(r"[;{})]\s*" + re.escape(name) + r"\s*\([^()]*\)\s*;", live)
                     if rows and bare:
                         flagged.add(name)
                         issues.append("NAME-COLLISION: 메서드 `%s()`가 vanilla 클래스 `%s`와 충돌 + 단독문장 bare 호출 (%s) — "
@@ -503,6 +522,11 @@ def enforce_lint(code_or_path: str) -> str:
     # lint the LIVE code only (comments are allowed to mention anything)
     live = re.sub(r"/\*.*?\*/", lambda m_: "\n" * m_.group(0).count("\n"), code, flags=re.S)
     live = re.sub(r"//[^\n]*", "", live)
+    # ★ 문자열 리터럴 '속'을 공백으로 채운다. 따옴표와 길이는 그대로 둔다.
+    #   안 그러면 Print("never write (int)x") 같은 코드가 C캐스트로 잡힌다(#2).
+    #   길이를 유지하므로 위치 계산이 어긋나지 않고, 따옴표를 남기므로
+    #   STR_PLUS_BOOL(`"..." + true`) 같은 검사는 그대로 동작한다.
+    live = _blank_strings(live)
 
     issues = []
     for m_ in MODDED_DECL.finditer(live):
