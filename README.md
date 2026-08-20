@@ -34,6 +34,7 @@ Every tool is **verdict/evidence first** — the first line is the conclusion (`
 
 | Tool | Purpose |
 |---|---|
+| **`check_env()`** | Pre-flight the environment **before writing code** — index DB, mod-source mount, and the exact commands to mount P: / extract game data (both run unattended) |
 | **`check_modded(class)`** | Pre-flight a `modded class` — exists? commented-out (deprecated)? which module? already modded by whom? used anywhere? |
 | **`enforce_lint(code\|path)`** | Static check — unknown-type (incl. commented), C-style casts, `string+bool`, widget-method existence, name collisions, platform-gated overrides |
 | **`check_config(path)`** | `config.cpp` validity — is an item declared under the right `CfgXxx`? (WRONG-CFG = model-less phantom → won't spawn) |

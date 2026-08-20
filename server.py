@@ -639,6 +639,99 @@ def enforce_doc(topic: str) -> str:
         return "'%s' 관련 섹션 없음. 가이드 헤딩: %s" % (topic, ", ".join(re.findall(r"(?m)^#{1,4} (.+)$", text)[:30]))
     return ("\n\n---\n\n".join(hits))[:8000]
 
+@mcp.tool()
+def check_env() -> str:
+    """작업 시작 전 환경 점검. **코드를 짜기 전에 제일 먼저 부른다.**
+
+    이 서버는 도커 안에서 돌기 때문에 호스트(윈도우)를 직접 볼 수 없다. 그래서
+      * 컨테이너가 아는 것(인덱스 DB / 모드셋 마운트 / 가이드)은 **직접 판정**하고,
+      * 호스트 쪽(DayZ Tools, P: 드라이브, 게임데이터)은 **확인 명령과 고치는 명령을 돌려준다.**
+    호출한 쪽(에이전트)이 그 명령을 실행해 스스로 갖추면 된다.
+    사람이 해야 하는 건 DayZ 와 DayZ Tools 설치뿐이고, P: 마운트와 게임데이터 추출은
+    무인 실행이 되므로 에이전트가 직접 처리할 수 있다."""
+    L = []
+    ok = True
+
+    # ── 컨테이너 안에서 판정 가능한 것 ──────────────────────────
+    L.append("[1] 인덱스 DB")
+    if not os.path.exists(DB):
+        ok = False
+        L.append("  ㄴㄴ 없음: " + DB)
+        L.append("     -> 저장소를 통째로 클론했는지 확인(data/dayz_scripts.db 가 같이 온다).")
+        L.append("        docker 실행에서 data 마운트를 빠뜨렸을 수도 있다.")
+    else:
+        try:
+            n_sym = q("SELECT COUNT(*) FROM symbols")[0][0]
+            n_mod = q("SELECT COUNT(*) FROM symbols WHERE source!='vanilla'")[0][0]
+            L.append("  ㅇㅇ 심볼 %d개 (바닐라 %d / 모드 %d)" % (n_sym, n_sym - n_mod, n_mod))
+            if n_mod == 0:
+                L.append("     ! 모드 심볼 0 — 내 모드 소스가 인덱싱되지 않았다.")
+                L.append("       DAYZ_MCP_MODSET 을 주고 index_local.py 를 다시 돌리면 내 클래스도 조회된다.")
+        except Exception as e:
+            ok = False
+            L.append("  ㄴㄴ DB 를 읽지 못함: %s" % e)
+
+    L.append("")
+    L.append("[2] 모드 소스 마운트 (DAYZ_MCP_MODSET=%s)" % (MODSET or "(미설정)"))
+    if not MODSET:
+        L.append("  -- 미설정. 내 모드 클래스는 조회되지 않는다(바닐라만 나온다).")
+        L.append("     docker 실행에 모드 소스 루트를 /modset 으로 마운트할 것.")
+    elif not os.path.isdir(MODSET):
+        ok = False
+        L.append("  ㄴㄴ 경로가 없다 — 마운트가 안 붙었다.")
+    else:
+        n = 0
+        for _, _, fs in os.walk(MODSET):
+            n += len([f for f in fs if f.lower().endswith(".c")])
+        L.append("  ㅇㅇ .c 파일 %d개" % n)
+        if n == 0:
+            L.append("     ! 비어 있다. 모드 소스 루트가 맞는지 확인.")
+
+    L.append("")
+    L.append("[3] Enforce 가이드 (enforce_doc 용)")
+    L.append("  %s %s" % ("ㅇㅇ" if os.path.exists(GUIDE) else "--", GUIDE))
+    if not os.path.exists(GUIDE):
+        L.append("     가이드 폴더를 /docs 로 마운트하면 enforce_doc 이 산다.")
+
+    # ── 호스트 쪽: 실행할 명령을 돌려준다 ───────────────────────
+    TOOLS = "C:/Program Files (x86)/Steam/steamapps/common/DayZ Tools/Bin"
+    L.append("")
+    L.append("[4] 호스트 점검 — 아래를 직접 실행해 확인하고, 없으면 고칠 것")
+    L.append("")
+    L.append("  (a) DayZ Tools 설치")
+    L.append('      ls "%s"' % TOOLS)
+    L.append("      없으면: Steam 라이브러리 -> 도구 -> DayZ Tools 설치  ← 사람이 해야 함")
+    L.append("")
+    L.append("  (b) P: 드라이브 마운트")
+    L.append("      ls /p/scripts")
+    L.append("      없으면 마운트한다(무인 실행 가능):")
+    L.append('      "%s/WorkDrive/WorkDrive.exe" /y /Silent /nowarnings /mount P: "C:\\Dayzworkfolder"' % TOOLS)
+    L.append("      * 작업 폴더 경로는 환경마다 다르다. 과거 마운트 이력에서 확인할 수 있다:")
+    L.append('        %s/Logs/WorkDrive.*.rpt 안의 "Command line:" 줄' % TOOLS)
+    L.append("")
+    L.append("  (c) 게임 데이터 추출 (P:/scripts, P:/dz)")
+    L.append("      P: 는 붙었는데 P:/scripts 가 비어 있으면 추출이 안 된 것:")
+    L.append('      "%s/WorkDrive/WorkDrive.exe" /ExtractGameData' % TOOLS)
+    L.append("      * 오래 걸린다. 끝난 뒤 index_local.py 를 다시 돌려야 인덱스가 최신이 된다.")
+    L.append("")
+    L.append("  (d) 패킹 도구 (보통 (a) 가 되면 같이 있다)")
+    L.append("      FileBank(패킹) / BankRev(언팩) : %s/PboUtils" % TOOLS)
+    L.append("      CfgConvert(bin<->cpp)          : %s/CfgConvert" % TOOLS)
+
+    # ── 도구가 대신 못 하는 절차 ────────────────────────────────
+    L.append("")
+    L.append("[5] 작업 규칙 — 도구가 대신 못 하므로 반드시 지킬 것")
+    L.append("  * 패킹 뒤에는 pbo 를 열어 변경이 실제로 들어갔는지 확인한다.")
+    L.append("    FileBank 는 대상 pbo 가 잠겨 있으면 exit=0 을 반환하면서 조용히 건너뛴다.")
+    L.append("    (게임이나 서버가 켜져 있으면 잠긴다 -> 끄고 다시 패킹)")
+    L.append("  * 배포 뒤에는 사용자에게 이렇게 요청한다:")
+    L.append('      "서버를 켜고 profiles/script.log 를 붙여넣어 주세요"')
+    L.append("    컴파일 성공 여부는 그 로그로만 확인된다.")
+    L.append("  * GUI(레이아웃/stringtable)를 바꿨으면 클라이언트를 완전히 재시작해야 한다.")
+    L.append("    reconnect 로는 pbo 가 갱신되지 않는다.")
+
+    head = "환경 점검: %s" % ("컨테이너 쪽 이상 없음 ㅇㅇ" if ok else "문제 있음 ㄴㄴ")
+    return head + "\n\n" + "\n".join(L)
 
 if __name__ == "__main__":
     mcp.run()

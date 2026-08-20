@@ -34,6 +34,7 @@ modded class ActionFishing { override string GetText() { ... } }
 
 | 도구 | 용도 |
 |---|---|
+| **`check_env()`** | **코드 짜기 전에** 환경 점검 — 인덱스 DB·모드소스 마운트 + P: 마운트/게임데이터 추출 명령(둘 다 무인 실행 가능) |
 | **`check_modded(class)`** | `modded class` 사전 판정 — 실존? 주석처리(deprecated)? 모듈? 이미 누가 mod? 쓰는곳? |
 | **`enforce_lint(code\|path)`** | 정적 검사 — unknown-type(주석 포함)·C캐스트·`string+bool`·위젯 메서드 실존·이름충돌·platform-gated override |
 | **`check_config(path)`** | `config.cpp` 정합성 — 아이템이 맞는 `CfgXxx`에 선언됐나 (WRONG-CFG = 모델없는 유령 → 스폰버그) |
