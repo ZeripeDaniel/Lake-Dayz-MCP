@@ -639,26 +639,92 @@ def enforce_doc(topic: str) -> str:
         return "'%s' 관련 섹션 없음. 가이드 헤딩: %s" % (topic, ", ".join(re.findall(r"(?m)^#{1,4} (.+)$", text)[:30]))
     return ("\n\n---\n\n".join(hits))[:8000]
 
+
+def _in_docker():
+    """컨테이너 안인가. 도커면 호스트(윈도우)를 볼 수 없으므로 호스트 점검은 '명령 반환' 으로 돌린다."""
+    if os.path.exists("/.dockerenv"):
+        return True
+    try:
+        with open("/proc/1/cgroup", encoding="utf-8", errors="replace") as f:
+            return "docker" in f.read() or "containerd" in f.read()
+    except Exception:
+        return False
+
+
+def _steam_libraries():
+    """Steam 라이브러리 경로들. DayZ Tools 가 C: 가 아닌 다른 드라이브에 깔려 있을 수 있다."""
+    libs, seen = [], set()
+    roots = [os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+             os.environ.get("ProgramFiles", r"C:\Program Files")]
+    for r in roots:
+        if r:
+            libs.append(os.path.join(r, "Steam"))
+    for base in list(libs):
+        vdf = os.path.join(base, "steamapps", "libraryfolders.vdf")
+        try:
+            txt = open(vdf, encoding="utf-8", errors="replace").read()
+        except Exception:
+            continue
+        for p in re.findall(r'"path"\s*"([^"]+)"', txt):
+            libs.append(p.replace("\\\\", "\\"))
+    out = []
+    for p in libs:
+        k = p.lower()
+        if k not in seen:
+            seen.add(k)
+            out.append(p)
+    return out
+
+
+def _find_tools():
+    """DayZ Tools 의 Bin 폴더. 없으면 ""."""
+    env = os.environ.get("DAYZ_TOOLS_BIN", "")
+    if env and os.path.isdir(env):
+        return env
+    for lib in _steam_libraries():
+        p = os.path.join(lib, "steamapps", "common", "DayZ Tools", "Bin")
+        if os.path.isdir(p):
+            return p
+    return ""
+
+
+def _workdrive_hint(bin_dir):
+    """과거 마운트에 쓰인 작업 폴더 경로를 WorkDrive 로그에서 되찾는다(환경마다 다르다)."""
+    for f in sorted(glob.glob(os.path.join(bin_dir, "Logs", "WorkDrive*.rpt")), reverse=True):
+        try:
+            txt = open(f, encoding="utf-8", errors="replace").read()
+        except Exception:
+            continue
+        m = re.search(r'/mount\s+[Pp]:?\s+"([^"]+)"', txt)
+        if m:
+            return m.group(1)
+    return ""
+
+
 @mcp.tool()
 def check_env() -> str:
     """작업 시작 전 환경 점검. **코드를 짜기 전에 제일 먼저 부른다.**
 
-    이 서버는 도커 안에서 돌기 때문에 호스트(윈도우)를 직접 볼 수 없다. 그래서
-      * 컨테이너가 아는 것(인덱스 DB / 모드셋 마운트 / 가이드)은 **직접 판정**하고,
-      * 호스트 쪽(DayZ Tools, P: 드라이브, 게임데이터)은 **확인 명령과 고치는 명령을 돌려준다.**
-    호출한 쪽(에이전트)이 그 명령을 실행해 스스로 갖추면 된다.
-    사람이 해야 하는 건 DayZ 와 DayZ Tools 설치뿐이고, P: 마운트와 게임데이터 추출은
-    무인 실행이 되므로 에이전트가 직접 처리할 수 있다."""
+    실행 모드를 스스로 감지해서 답이 달라진다.
+      * venv/네이티브(윈도우) : 호스트를 직접 볼 수 있으므로 DayZ Tools·P: 드라이브·게임데이터를
+        **직접 판정**하고, 없을 때만 고치는 명령을 준다.
+      * 도커 : 호스트가 안 보이므로 **확인/수정 명령을 돌려준다.** 호출한 쪽이 실행하면 된다.
+
+    P: 마운트와 게임데이터 추출은 WorkDrive.exe 가 무인 실행을 지원하므로 에이전트가 직접 할 수 있다.
+    사람이 해야 하는 건 DayZ 와 DayZ Tools 설치뿐이다."""
     L = []
     ok = True
+    docker = _in_docker()
+    mode = "도커" if docker else ("네이티브(%s)" % os.name)
 
-    # ── 컨테이너 안에서 판정 가능한 것 ──────────────────────────
+    # ── 어느 모드든 컨테이너/프로세스가 아는 것 ────────────────
     L.append("[1] 인덱스 DB")
     if not os.path.exists(DB):
         ok = False
         L.append("  ㄴㄴ 없음: " + DB)
-        L.append("     -> 저장소를 통째로 클론했는지 확인(data/dayz_scripts.db 가 같이 온다).")
-        L.append("        docker 실행에서 data 마운트를 빠뜨렸을 수도 있다.")
+        L.append("     저장소를 통째로 클론했는지 확인(data/dayz_scripts.db 가 같이 온다).")
+        if docker:
+            L.append("     도커라면 data 마운트를 빠뜨렸을 수 있다.")
     else:
         try:
             n_sym = q("SELECT COUNT(*) FROM symbols")[0][0]
@@ -666,19 +732,18 @@ def check_env() -> str:
             L.append("  ㅇㅇ 심볼 %d개 (바닐라 %d / 모드 %d)" % (n_sym, n_sym - n_mod, n_mod))
             if n_mod == 0:
                 L.append("     ! 모드 심볼 0 — 내 모드 소스가 인덱싱되지 않았다.")
-                L.append("       DAYZ_MCP_MODSET 을 주고 index_local.py 를 다시 돌리면 내 클래스도 조회된다.")
+                L.append("       DAYZ_MCP_MODSET 을 주고 index_local.py 를 다시 돌릴 것.")
         except Exception as e:
             ok = False
             L.append("  ㄴㄴ DB 를 읽지 못함: %s" % e)
 
     L.append("")
-    L.append("[2] 모드 소스 마운트 (DAYZ_MCP_MODSET=%s)" % (MODSET or "(미설정)"))
+    L.append("[2] 모드 소스 (DAYZ_MCP_MODSET=%s)" % (MODSET or "(미설정)"))
     if not MODSET:
-        L.append("  -- 미설정. 내 모드 클래스는 조회되지 않는다(바닐라만 나온다).")
-        L.append("     docker 실행에 모드 소스 루트를 /modset 으로 마운트할 것.")
+        L.append("  -- 미설정. 내 모드 클래스는 조회되지 않는다(바닐라만).")
     elif not os.path.isdir(MODSET):
         ok = False
-        L.append("  ㄴㄴ 경로가 없다 — 마운트가 안 붙었다.")
+        L.append("  ㄴㄴ 경로가 없다" + (" — 마운트가 안 붙었다." if docker else "."))
     else:
         n = 0
         for _, _, fs in os.walk(MODSET):
@@ -690,47 +755,80 @@ def check_env() -> str:
     L.append("")
     L.append("[3] Enforce 가이드 (enforce_doc 용)")
     L.append("  %s %s" % ("ㅇㅇ" if os.path.exists(GUIDE) else "--", GUIDE))
-    if not os.path.exists(GUIDE):
-        L.append("     가이드 폴더를 /docs 로 마운트하면 enforce_doc 이 산다.")
 
-    # ── 호스트 쪽: 실행할 명령을 돌려준다 ───────────────────────
-    TOOLS = "C:/Program Files (x86)/Steam/steamapps/common/DayZ Tools/Bin"
+    # ── 호스트 쪽 ─────────────────────────────────────────────
     L.append("")
-    L.append("[4] 호스트 점검 — 아래를 직접 실행해 확인하고, 없으면 고칠 것")
-    L.append("")
-    L.append("  (a) DayZ Tools 설치")
-    L.append('      ls "%s"' % TOOLS)
-    L.append("      없으면: Steam 라이브러리 -> 도구 -> DayZ Tools 설치  ← 사람이 해야 함")
-    L.append("")
-    L.append("  (b) P: 드라이브 마운트")
-    L.append("      ls /p/scripts")
-    L.append("      없으면 마운트한다(무인 실행 가능):")
-    L.append('      "%s/WorkDrive/WorkDrive.exe" /y /Silent /nowarnings /mount P: "C:\\Dayzworkfolder"' % TOOLS)
-    L.append("      * 작업 폴더 경로는 환경마다 다르다. 과거 마운트 이력에서 확인할 수 있다:")
-    L.append('        %s/Logs/WorkDrive.*.rpt 안의 "Command line:" 줄' % TOOLS)
-    L.append("")
-    L.append("  (c) 게임 데이터 추출 (P:/scripts, P:/dz)")
-    L.append("      P: 는 붙었는데 P:/scripts 가 비어 있으면 추출이 안 된 것:")
-    L.append('      "%s/WorkDrive/WorkDrive.exe" /ExtractGameData' % TOOLS)
-    L.append("      * 오래 걸린다. 끝난 뒤 index_local.py 를 다시 돌려야 인덱스가 최신이 된다.")
-    L.append("")
-    L.append("  (d) 패킹 도구 (보통 (a) 가 되면 같이 있다)")
-    L.append("      FileBank(패킹) / BankRev(언팩) : %s/PboUtils" % TOOLS)
-    L.append("      CfgConvert(bin<->cpp)          : %s/CfgConvert" % TOOLS)
+    if docker or os.name != "nt":
+        L.append("[4] 호스트 점검 — 실행 모드가 %s 라 여기서는 볼 수 없다." % mode)
+        L.append("    아래를 **직접 실행**해 확인하고, 없으면 고칠 것.")
+        T = "<DayZ Tools>/Bin"
+        L.append("")
+        L.append("  (a) DayZ Tools 설치")
+        L.append('      ls "C:/Program Files (x86)/Steam/steamapps/common/DayZ Tools/Bin"')
+        L.append("      없으면: Steam 라이브러리 -> 도구 -> DayZ Tools  ← 사람이 해야 함")
+        L.append("")
+        L.append("  (b) P: 마운트   ->  ls /p/scripts")
+        L.append('      없으면: "%s/WorkDrive/WorkDrive.exe" /y /Silent /nowarnings /mount P: "<작업폴더>"' % T)
+        L.append('      작업폴더 경로는 %s/Logs/WorkDrive.*.rpt 의 "Command line:" 줄에서 찾을 수 있다.' % T)
+        L.append("")
+        L.append("  (c) 게임데이터 추출 (P:/scripts 가 비어 있으면)")
+        L.append('      "%s/WorkDrive/WorkDrive.exe" /ExtractGameData' % T)
+        L.append("      끝난 뒤 index_local.py 재실행.")
+    else:
+        L.append("[4] 호스트 점검 (네이티브 실행이라 직접 확인함)")
+        bin_dir = _find_tools()
+        L.append("")
+        if not bin_dir:
+            ok = False
+            L.append("  (a) DayZ Tools  ㄴㄴ 못 찾음")
+            L.append("      Steam 라이브러리 -> 도구 -> DayZ Tools 설치  ← 사람이 해야 함")
+            L.append("      다른 곳에 있다면 DAYZ_TOOLS_BIN 환경변수로 Bin 경로를 지정.")
+        else:
+            L.append("  (a) DayZ Tools  ㅇㅇ %s" % bin_dir)
+            for sub, why in (("PboUtils/FileBank.exe", "패킹"),
+                             ("PboUtils/BankRev.exe", "언팩"),
+                             ("CfgConvert/CfgConvert.exe", "bin<->cpp"),
+                             ("WorkDrive/WorkDrive.exe", "P: 마운트/추출")):
+                p = os.path.join(bin_dir, *sub.split("/"))
+                L.append("      %s %-28s (%s)" % ("ㅇㅇ" if os.path.exists(p) else "ㄴㄴ", sub, why))
+
+        L.append("")
+        pscripts = os.path.join("P:\\", "scripts")
+        if not os.path.isdir("P:\\"):
+            ok = False
+            L.append("  (b) P: 드라이브  ㄴㄴ 마운트 안 됨")
+            if bin_dir:
+                hint = _workdrive_hint(bin_dir) or "C:\\Dayzworkfolder"
+                L.append("      실행하면 붙는다(무인):")
+                L.append('      "%s\\WorkDrive\\WorkDrive.exe" /y /Silent /nowarnings /mount P: "%s"'
+                         % (bin_dir, hint))
+                if _workdrive_hint(bin_dir):
+                    L.append("      (작업폴더 경로는 이 PC 의 WorkDrive 로그에서 가져왔다)")
+        else:
+            L.append("  (b) P: 드라이브  ㅇㅇ 마운트됨")
+            if not os.path.isdir(pscripts):
+                ok = False
+                L.append("  (c) 게임데이터  ㄴㄴ P:\\scripts 없음 — 추출이 안 됐다")
+                if bin_dir:
+                    L.append('      "%s\\WorkDrive\\WorkDrive.exe" /ExtractGameData' % bin_dir)
+                    L.append("      오래 걸린다. 끝난 뒤 index_local.py 재실행.")
+            else:
+                n = len(glob.glob(os.path.join(pscripts, "*")))
+                L.append("  (c) 게임데이터  ㅇㅇ P:\\scripts (항목 %d개)" % n)
 
     # ── 도구가 대신 못 하는 절차 ────────────────────────────────
     L.append("")
     L.append("[5] 작업 규칙 — 도구가 대신 못 하므로 반드시 지킬 것")
     L.append("  * 패킹 뒤에는 pbo 를 열어 변경이 실제로 들어갔는지 확인한다.")
-    L.append("    FileBank 는 대상 pbo 가 잠겨 있으면 exit=0 을 반환하면서 조용히 건너뛴다.")
-    L.append("    (게임이나 서버가 켜져 있으면 잠긴다 -> 끄고 다시 패킹)")
+    L.append("    FileBank 는 대상 pbo 가 잠겨 있으면 exit=0 을 반환하면서 조용히 건너뛴다")
+    L.append("    (게임/서버가 켜져 있으면 잠긴다 -> 끄고 다시 패킹).")
     L.append("  * 배포 뒤에는 사용자에게 이렇게 요청한다:")
     L.append('      "서버를 켜고 profiles/script.log 를 붙여넣어 주세요"')
     L.append("    컴파일 성공 여부는 그 로그로만 확인된다.")
     L.append("  * GUI(레이아웃/stringtable)를 바꿨으면 클라이언트를 완전히 재시작해야 한다.")
     L.append("    reconnect 로는 pbo 가 갱신되지 않는다.")
 
-    head = "환경 점검: %s" % ("컨테이너 쪽 이상 없음 ㅇㅇ" if ok else "문제 있음 ㄴㄴ")
+    head = "환경 점검 [%s]: %s" % (mode, "이상 없음 ㅇㅇ" if ok else "문제 있음 ㄴㄴ")
     return head + "\n\n" + "\n".join(L)
 
 if __name__ == "__main__":
