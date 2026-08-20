@@ -831,5 +831,216 @@ def check_env() -> str:
     head = "환경 점검 [%s]: %s" % (mode, "이상 없음 ㅇㅇ" if ok else "문제 있음 ㄴㄴ")
     return head + "\n\n" + "\n".join(L)
 
+import struct as _struct
+import hashlib as _hashlib
+
+
+def _pbo_header(path):
+    """PBO 헤더만 읽는다(데이터 블록은 건드리지 않음).
+    반환: (props, entries, data_offset). entries = [(name, method, osize, dsize), ...]"""
+    VERS, CPRS = 0x56657273, 0x43707273
+    props, ents = [], []
+    with open(path, "rb") as f:
+        def z():
+            o = bytearray()
+            while True:
+                b = f.read(1)
+                if not b or b == b"\x00":
+                    break
+                o += b
+            return o.decode("latin-1")
+        while True:
+            name = z()
+            hdr = f.read(20)
+            if len(hdr) < 20:
+                break
+            method, osize, res, ts, dsize = _struct.unpack("<5I", hdr)
+            if name == "" and method == VERS:
+                while True:
+                    k = z()
+                    if k == "":
+                        break
+                    props.append((k, z()))
+                continue
+            if name == "" and method == 0 and dsize == 0:
+                break
+            ents.append((name, method, osize, dsize))
+        off = f.tell()
+    return props, ents, off, CPRS
+
+
+def _scan_bytes(path, needles):
+    """파일을 청크로 훑어 각 문자열이 있는지. 700MB 짜리 pbo 가 있으므로 통째로 읽지 않는다.
+    청크 경계에서 잘리는 걸 막으려고 이전 꼬리를 겹쳐 이어 붙인다."""
+    found = {n: False for n in needles}
+    raw = [n.encode("utf-8") for n in needles]
+    keep = max([len(r) for r in raw] + [1]) - 1
+    tail = b""
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(1 << 20)
+            if not chunk:
+                break
+            buf = tail + chunk
+            for n, r in zip(needles, raw):
+                if not found[n] and r in buf:
+                    found[n] = True
+            if all(found.values()):
+                break
+            tail = buf[-keep:] if keep else b""
+    return found
+
+
+def _sha1_file(path):
+    h = _hashlib.sha1()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _newest(src_dir):
+    """소스 폴더에서 가장 최근에 바뀐 (mtime, 경로)."""
+    best = (0, "")
+    for root, _, fs in os.walk(src_dir):
+        for fn in fs:
+            p = os.path.join(root, fn)
+            try:
+                m = os.path.getmtime(p)
+            except OSError:
+                continue
+            if m > best[0]:
+                best = (m, p)
+    return best
+
+
+@mcp.tool()
+def check_pbo(pbo_path: str, source_dir: str = "", contains: str = "", also: str = "") -> str:
+    """패킹/배포 사후 검증. **패킹한 직후, 그리고 배포한 직후에 부른다.**
+
+    "패킹했다" 와 "변경이 실제로 들어갔다" 는 다른 말이다. FileBank 는 대상 pbo 가
+    다른 프로세스에 잠겨 있으면(게임/서버 실행 중) **exit=0 을 반환하면서 조용히 건너뛴다.**
+    그래서 성공한 줄 알고 옛 pbo 를 그대로 쓰는 사고가 난다. 이 툴은 pbo 를 직접 열어 확인한다.
+
+    인자
+      pbo_path   : 검사할 pbo
+      source_dir : 이 pbo 를 만든 소스 폴더(주면 stale 판정 — 조용한 실패를 잡는 핵심)
+      contains   : 쉼표로 구분한 문자열들. 모두 pbo 안에 있어야 한다
+                   (예: 방금 넣은 한국어 문구, 새 클래스명)
+      also       : 쉼표로 구분한 다른 배포본 경로. 해시가 같은지 본다
+                   (서버용/클라용 폴더 양쪽에 넣었는지)"""
+    L = []
+    ok = True
+
+    if not os.path.exists(pbo_path):
+        # 도커라 안 보이는 것일 수 있다 — 그때는 실행할 명령을 준다.
+        if _in_docker():
+            return ("파일이 안 보인다: %s\n"
+                    "도커로 실행 중이라 호스트 경로가 마운트돼 있지 않을 수 있다.\n"
+                    "직접 확인할 것:  ls -la \"%s\"\n"
+                    "또는 pbo 가 있는 폴더를 컨테이너에 마운트하고 다시 부를 것." % (pbo_path, pbo_path))
+        return "ㄴㄴ 파일 없음: %s" % pbo_path
+
+    size = os.path.getsize(pbo_path)
+    L.append("대상: %s (%.1f MB)" % (pbo_path, size / 1048576.0))
+
+    # ── 1. 헤더 / prefix ──────────────────────────────────────
+    try:
+        props, ents, off, CPRS = _pbo_header(pbo_path)
+    except Exception as e:
+        return "ㄴㄴ pbo 헤더를 못 읽음: %s" % e
+
+    prefix = dict(props).get("prefix", "")
+    L.append("")
+    L.append("[1] prefix / 헤더")
+    if not prefix:
+        ok = False
+        L.append("  ㄴㄴ prefix 가 비었다 — 이 pbo 의 파일들이 경로로 잡히지 않는다.")
+    else:
+        L.append("  ㅇㅇ prefix = %r" % prefix)
+        if prefix.endswith("\\") or prefix.endswith("/"):
+            ok = False
+            L.append("  ㄴㄴ ★ prefix 끝에 구분자가 붙어 있다.")
+            L.append("      이러면 이 pbo 의 스크립트가 **통째로 컴파일에서 빠진다**.")
+            L.append("      증상은 엉뚱하게 나온다 — 다른 모드에서 'Can't find variable X'.")
+            L.append("      FileBank 는 -property prefix=<이름> 으로 넘길 것($PREFIX$ 파일의 개행도 원인이 된다).")
+    L.append("  엔트리 %d개, 데이터 시작 오프셋 %d" % (len(ents), off))
+
+    empty = [n for n, m, o, d in ents if d == 0]
+    if empty:
+        L.append("  ! 크기 0인 엔트리 %d개: %s" % (len(empty), empty[:3]))
+
+    # $PREFIX$ 가 엔트리로 들어가 있으면 헤더 prefix 와 어긋나는지 본다
+    pfx_ent = [n for n, m, o, d in ents if n.lower().lstrip("$").rstrip("$") == "prefix"]
+    if pfx_ent:
+        L.append("  ! $PREFIX$ 파일이 pbo 안에 포함돼 있다(%s). 보통은 빼도 된다." % pfx_ent[0])
+
+    # ── 2. stale 판정 (FileBank 조용한 실패) ──────────────────
+    L.append("")
+    L.append("[2] 최신 여부")
+    pbo_m = os.path.getmtime(pbo_path)
+    if not source_dir:
+        L.append("  -- source_dir 를 주면 소스보다 오래됐는지(=패킹이 실제로 됐는지) 판정한다.")
+    elif not os.path.isdir(source_dir):
+        L.append("  ㄴㄴ source_dir 없음: %s" % source_dir)
+    else:
+        m, newest = _newest(source_dir)
+        if m > pbo_m:
+            ok = False
+            L.append("  ㄴㄴ ★ pbo 가 소스보다 오래됐다 — 패킹이 실제로 반영되지 않았다.")
+            L.append("      소스 최신: %s" % newest)
+            L.append("      FileBank 가 잠긴 파일을 건너뛴 경우일 가능성이 높다.")
+            L.append("      게임/서버를 끄고 다시 패킹한 뒤 이 툴을 다시 부를 것.")
+        else:
+            L.append("  ㅇㅇ 소스보다 최신 (소스 대비 +%d초)" % int(pbo_m - m))
+
+    # ── 3. 내용 확인 ──────────────────────────────────────────
+    L.append("")
+    L.append("[3] 내용 확인")
+    needles = [s.strip() for s in contains.split(",") if s.strip()]
+    if not needles:
+        L.append("  -- contains 로 '방금 넣은 문구/클래스명' 을 주면 실제 포함 여부를 확인한다.")
+    else:
+        found = _scan_bytes(pbo_path, needles)
+        for n in needles:
+            if not found[n]:
+                ok = False
+            L.append("  %s %s" % ("ㅇㅇ" if found[n] else "ㄴㄴ", n))
+        if not all(found.values()):
+            L.append("      ! 없는 항목이 있다 = 이 pbo 는 그 변경을 담고 있지 않다.")
+            L.append("        압축(Cprs) 엔트리 안의 문자열은 이 방식으로 안 잡힐 수 있다 —")
+            L.append("        FileBank 로 만든 pbo 는 비압축이라 보통 문제되지 않는다.")
+
+    # ── 4. 다른 배포본과 대조 ─────────────────────────────────
+    L.append("")
+    L.append("[4] 배포본 대조")
+    others = [s.strip() for s in also.split(",") if s.strip()]
+    if not others:
+        L.append("  -- also 로 다른 배포 경로를 주면 해시를 비교한다(양쪽에 넣었는지).")
+    else:
+        h0 = _sha1_file(pbo_path)
+        L.append("  기준 %s  %s" % (h0[:12], pbo_path))
+        for o in others:
+            if not os.path.exists(o):
+                ok = False
+                L.append("  ㄴㄴ 없음: %s" % o)
+                continue
+            h = _sha1_file(o)
+            same = (h == h0)
+            if not same:
+                ok = False
+            L.append("  %s %s  %s" % ("ㅇㅇ" if same else "ㄴㄴ", h[:12], o))
+        if not ok:
+            L.append("      ! 다르면 한쪽만 갱신된 것이다. 복사가 잠금으로 실패했을 수 있다.")
+
+    L.append("")
+    L.append("[5] 다음 단계")
+    L.append("  서버를 켜고 profiles/script.log 를 받아 컴파일 결과를 확인할 것.")
+    L.append('  사용자에게: "서버를 켜고 profiles/script.log 를 붙여넣어 주세요"')
+    L.append("  GUI(레이아웃/stringtable)를 바꿨다면 클라이언트 완전 재시작이 필요하다.")
+
+    head = "패킹/배포 검증: %s" % ("이상 없음 ㅇㅇ" if ok else "문제 있음 ㄴㄴ")
+    return head + "\n\n" + "\n".join(L)
+
 if __name__ == "__main__":
     mcp.run()

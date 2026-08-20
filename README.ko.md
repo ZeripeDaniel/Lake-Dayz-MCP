@@ -34,6 +34,7 @@ modded class ActionFishing { override string GetText() { ... } }
 
 | 도구 | 용도 |
 |---|---|
+| **`check_pbo(pbo, source_dir, contains, also)`** | 패킹/배포 사후 검증 — 소스보다 오래됐나(FileBank 는 잠긴 pbo 를 exit=0 으로 조용히 건너뛴다)·`prefix` 끝 구분자 함정·문구 실제 포함·배포본 해시 대조 |
 | **`check_env()`** | **코드 짜기 전에** 환경 점검 — 인덱스 DB·모드소스 마운트 + P: 마운트/게임데이터 추출 명령(둘 다 무인 실행 가능) |
 | **`check_modded(class)`** | `modded class` 사전 판정 — 실존? 주석처리(deprecated)? 모듈? 이미 누가 mod? 쓰는곳? |
 | **`enforce_lint(code\|path)`** | 정적 검사 — unknown-type(주석 포함)·C캐스트·`string+bool`·위젯 메서드 실존·이름충돌·platform-gated override |
