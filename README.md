@@ -90,8 +90,12 @@ claude mcp add -s user lake-dayz -- ^
     -v "<repo>\data:/data:ro" ^
     -v "<your-mod-source-root>:/modset:ro" ^
     -v "<dir-with-enforce-script-guide.md>:/docs:ro" ^
+    -v "<your-addons-dir>:/addons:ro" ^
     lake-dayz
 ```
+
+> `check_pbo` inspects packed PBOs, so mount the folder your PBOs land in (`/addons`) too — otherwise it can only hand back the command for you to run.
+> Running natively (option A) needs no mounts: it sees the host directly and probes DayZ Tools / `P:` itself.
 
 Mounts are read-only, so rebuilding the DB on the host is picked up automatically.
 Env vars: `DAYZ_MCP_DB` / `DAYZ_MCP_MODSET` / `DAYZ_MCP_GUIDE`.

@@ -90,8 +90,12 @@ claude mcp add -s user lake-dayz -- ^
     -v "<repo>\data:/data:ro" ^
     -v "<your-mod-source-root>:/modset:ro" ^
     -v "<dir-with-enforce-script-guide.md>:/docs:ro" ^
+    -v "<your-addons-dir>:/addons:ro" ^
     lake-dayz
 ```
+
+> `check_pbo` 는 패킹된 PBO 를 열어 보므로 pbo 가 놓이는 폴더도 `/addons` 로 마운트할 것 — 아니면 '직접 실행할 명령' 만 돌려준다.
+> 네이티브(A안)로 돌리면 마운트가 필요 없다. 호스트를 직접 보고 DayZ Tools / `P:` 를 스스로 확인한다.
 
 마운트가 read-only라, 호스트에서 DB만 다시 만들면 컨테이너가 자동으로 새 DB를 본다.
 환경변수: `DAYZ_MCP_DB` / `DAYZ_MCP_MODSET` / `DAYZ_MCP_GUIDE`.
